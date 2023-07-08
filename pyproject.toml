@@ -1,0 +1,41 @@
+[tool.black]
+line-length = 91
+include = '\.pyi?$'
+exclude = '''
+(
+  \.egg
+  | \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.pytest_cache
+  | \.tox
+  | \.nox
+  | \.venv
+  | _build
+  | build
+  | dist
+  | setup.py
+  | __pycache__
+  | \.vscode
+  | \bdist\b
+  | \bdoc\b
+)
+'''
+skip-string-normalization = true
+
+[tool.darker]
+src = [
+    "."
+]
+diff = true
+check = true
+isort = true
+lint = [
+    "flake8",
+]
+revision = "master..."
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
