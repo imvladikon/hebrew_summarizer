@@ -29,6 +29,8 @@ from transformers import (
 )
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import is_offline_mode
+import spacy_udpipe
+from spacy_udpipe import UDPipeModel
 
 logger = logging.getLogger(__name__)
 
@@ -269,9 +271,9 @@ class DataTrainingArguments:
 
     def __post_init__(self):
         if (
-            self.dataset_name is None
-            and self.train_file is None
-            and self.validation_file is None
+                self.dataset_name is None
+                and self.train_file is None
+                and self.validation_file is None
         ):
             raise ValueError("Need either a dataset name or a training/validation file.")
         else:
@@ -305,6 +307,34 @@ summarization_name_mapping = {
     "wiki_summary": ("article", "highlights"),
     "multi_news": ("document", "summary"),
 }
+
+
+class UDPipeTokenizer:
+
+    def __init__(self, language="he"):
+        if not self._model_exists(language):
+            spacy_udpipe.download("he")
+        self.nlp = spacy_udpipe.load(language)
+        self.udpipe_model = None
+
+    def _model_exists(self, language):
+        return spacy_udpipe.utils.LANGUAGES[language] in os.listdir(
+            spacy_udpipe.utils.MODELS_DIR)
+
+    def tokenize(self, text):
+        doc = self.nlp(text)
+        for token in doc:
+            yield token.text
+
+    def sentencize(self, text):
+        if self.udpipe_model is None:
+            self.udpipe_model = UDPipeModel("he")
+
+        for sentence in self.udpipe_model(text):
+            yield sentence.getText()
+
+    def __call__(self, text):
+        return list(self.tokenize(text))
 
 
 def main():
@@ -353,9 +383,9 @@ def main():
     # Detecting last checkpoint.
     last_checkpoint = None
     if (
-        os.path.isdir(training_args.output_dir)
-        and training_args.do_train
-        and not training_args.overwrite_output_dir
+            os.path.isdir(training_args.output_dir)
+            and training_args.do_train
+            and not training_args.overwrite_output_dir
     ):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
         if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
@@ -445,10 +475,11 @@ def main():
         model.resize_token_embeddings(len(tokenizer))
 
     if model.config.decoder_start_token_id is None and isinstance(
-        tokenizer, (MBartTokenizer, MBartTokenizerFast)
+            tokenizer, (MBartTokenizer, MBartTokenizerFast)
     ):
         if isinstance(tokenizer, MBartTokenizer):
-            model.config.decoder_start_token_id = tokenizer.lang_code_to_id[data_args.lang]
+            model.config.decoder_start_token_id = tokenizer.lang_code_to_id[
+                data_args.lang]
         else:
             model.config.decoder_start_token_id = tokenizer.convert_tokens_to_ids(
                 data_args.lang
@@ -460,8 +491,8 @@ def main():
         )
 
     if (
-        hasattr(model.config, "max_position_embeddings")
-        and model.config.max_position_embeddings < data_args.max_source_length
+            hasattr(model.config, "max_position_embeddings")
+            and model.config.max_position_embeddings < data_args.max_source_length
     ):
         if model_args.resize_position_embeddings is None:
             logger.warning(
@@ -497,7 +528,7 @@ def main():
 
     if isinstance(tokenizer, tuple(MULTILINGUAL_TOKENIZERS)):
         assert (
-            data_args.lang is not None
+                data_args.lang is not None
         ), f"{tokenizer.__class__.__name__} is a multilingual tokenizer which requires --lang argument"
 
         tokenizer.src_lang = data_args.lang
@@ -540,7 +571,7 @@ def main():
     padding = "max_length" if data_args.pad_to_max_length else False
 
     if training_args.label_smoothing_factor > 0 and not hasattr(
-        model, "prepare_decoder_input_ids_from_labels"
+            model, "prepare_decoder_input_ids_from_labels"
     ):
         logger.warning(
             "label_smoothing is enabled but the `prepare_decoder_input_ids_from_labels` method is not defined for"
@@ -609,7 +640,7 @@ def main():
             max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
             eval_dataset = eval_dataset.select(range(max_eval_samples))
         with training_args.main_process_first(
-            desc="validation dataset map pre-processing"
+                desc="validation dataset map pre-processing"
         ):
             eval_dataset = eval_dataset.map(
                 preprocess_function,
@@ -629,7 +660,7 @@ def main():
             max_predict_samples = min(len(predict_dataset), data_args.max_predict_samples)
             predict_dataset = predict_dataset.select(range(max_predict_samples))
         with training_args.main_process_first(
-            desc="prediction dataset map pre-processing"
+                desc="prediction dataset map pre-processing"
         ):
             predict_dataset = predict_dataset.map(
                 preprocess_function,
@@ -652,6 +683,7 @@ def main():
     )
 
     # Metric
+    hebrew_tokenizer = UDPipeTokenizer(language="he")
     metric = evaluate.load("rouge")
 
     def postprocess_text(preds, labels):
@@ -668,6 +700,7 @@ def main():
         preds, labels = eval_preds
         if isinstance(preds, tuple):
             preds = preds[0]
+        preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
         decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
         if data_args.ignore_pad_token_for_loss:
             # Replace -100 in the labels as we can't decode them.
@@ -678,7 +711,10 @@ def main():
         decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
 
         result = metric.compute(
-            predictions=decoded_preds, references=decoded_labels, use_stemmer=False
+            predictions=decoded_preds,
+            references=decoded_labels,
+            use_stemmer=False,
+            tokenizer=hebrew_tokenizer
         )
         result = {k: round(v * 100, 4) for k, v in result.items()}
         prediction_lens = [
@@ -786,7 +822,8 @@ def main():
         kwargs["dataset_tags"] = data_args.dataset_name
         if data_args.dataset_config_name is not None:
             kwargs["dataset_args"] = data_args.dataset_config_name
-            kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
+            kwargs[
+                "dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
         else:
             kwargs["dataset"] = data_args.dataset_name
 
